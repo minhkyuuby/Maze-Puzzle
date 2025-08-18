@@ -1,4 +1,5 @@
 using UnityEngine;
+// NOTE: Uses WallPooler MonoBehaviour for wall pooling
 using System.Collections.Generic;
 using System;
 using UnityEngine.Events;
@@ -17,6 +18,12 @@ public partial class MazeGenerator : MonoBehaviour
 	public float wallThickness = 0.1f;
 	public Material pathMaterial;
 	public Material floorMaterial;
+	[Header("Optimization")]
+	[Tooltip("Reuse (pool) wall GameObjects instead of destroying/instantiating every generation.")]
+	public bool useWallPooling = true;
+	[Tooltip("Optional pre-allocation size for wall pool (0 = no prewarm)." )]
+	public int initialWallPoolSize = 0;
+
 	// Removed: MazePoint GameObject spawning (graph uses virtual nodes only)
 	[Tooltip("If true, graph nodes are created only at intersections (dead ends, corners, junctions, start/end). If false, every cell becomes a graph node.")]
 	public bool pointsOnlyAtIntersections = true;
@@ -64,8 +71,23 @@ public partial class MazeGenerator : MonoBehaviour
 	// Track last option states for dynamic graph rebuild
 	bool _lastPointsOnlyAtIntersections;
 
+	// Pooling
+	[SerializeField] global::WallPooler wallPooler; // assigned or auto-added
+	GameObject _floorObj; // cached floor (not included inside wall pool)
+
 	void Start()
 	{
+		if (useWallPooling && wallPooler == null)
+		{
+			wallPooler = GetComponentInChildren<global::WallPooler>();
+			if (wallPooler == null)
+			{
+				var go = new GameObject("WallPooler");
+				go.transform.SetParent(transform, false);
+				wallPooler = go.AddComponent<global::WallPooler>();
+				wallPooler.autoInitialize = false; // we'll init manually with our prefab & prewarm
+			}
+		}
 		if (generateOnStart)
 			Generate();
 	}
@@ -104,11 +126,38 @@ public partial class MazeGenerator : MonoBehaviour
 
 	void ClearChildren()
 	{
-		var toDestroy = new List<GameObject>();
-		foreach (Transform t in transform)
-			toDestroy.Add(t.gameObject);
-		for (int i = 0; i < toDestroy.Count; i++)
-			DestroyImmediate(toDestroy[i]);
+		if (!useWallPooling)
+		{
+			var toDestroy = new List<GameObject>();
+			foreach (Transform t in transform)
+				toDestroy.Add(t.gameObject);
+			for (int i = 0; i < toDestroy.Count; i++)
+				DestroyImmediate(toDestroy[i]);
+			_floorObj = null;
+		}
+		else
+		{
+			if (wallPooler == null)
+			{
+				wallPooler = GetComponentInChildren<global::WallPooler>();
+				if (wallPooler == null)
+				{
+					var go = new GameObject("WallPooler");
+					go.transform.SetParent(transform, false);
+					wallPooler = go.AddComponent<global::WallPooler>();
+				}
+				wallPooler.autoInitialize = false;
+			}
+			wallPooler.SetWallPrefab(wallPrefab);
+			wallPooler.DeactivateAll();
+			// ensure prewarm only once when empty
+			if (initialWallPoolSize > 0 && wallPooler.TotalCount == 0)
+			{
+				wallPooler.prewarm = initialWallPoolSize;
+				wallPooler.Initialize();
+			}
+			if (_floorObj != null) _floorObj.SetActive(false);
+		}
 	}
 
 	void InitGrid()
@@ -325,18 +374,21 @@ public partial class MazeGenerator : MonoBehaviour
 
 	void BuildVisuals()
 	{
-		// floor
-		var floor = GameObject.CreatePrimitive(PrimitiveType.Cube);
-		floor.name = "MazeFloor";
-		floor.transform.parent = transform;
-		floor.transform.localScale = new Vector3(width * cellSize, 0.1f, height * cellSize);
-		// After applying originOffset, floor center sits at maze origin
-		floor.transform.localPosition = new Vector3(0f, -0.05f, 0f);
+		// floor (pooled separately)
+		if (_floorObj == null)
+		{
+			_floorObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
+			_floorObj.name = "MazeFloor";
+			_floorObj.transform.parent = transform;
+		}
+		_floorObj.transform.localScale = new Vector3(width * cellSize, 0.1f, height * cellSize);
+		_floorObj.transform.localPosition = new Vector3(0f, -0.05f, 0f);
 		if (floorMaterial != null)
 		{
-			var rend = floor.GetComponent<Renderer>();
+			var rend = _floorObj.GetComponent<Renderer>();
 			if (rend) rend.sharedMaterial = floorMaterial; // shared to avoid instancing
 		}
+		_floorObj.SetActive(true);
 
 	// walls: create up and right for each cell, and left/bottom boundaries (MazePoint objects removed)
 
@@ -534,20 +586,23 @@ public partial class MazeGenerator : MonoBehaviour
 	void CreateWall(Vector3 worldPos, Vector3 scale)
 	{
 		GameObject go;
-		if (wallPrefab != null)
+		if (useWallPooling)
 		{
-			go = Instantiate(wallPrefab, transform);
-			go.transform.localPosition = worldPos;
-			go.transform.localScale = scale;
+			go = wallPooler.Get();
 		}
 		else
 		{
-			go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-			go.transform.parent = transform;
-			go.transform.localPosition = worldPos;
-			go.transform.localScale = scale;
+			if (wallPrefab != null)
+				go = Instantiate(wallPrefab, transform);
+			else
+			{
+				go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+				go.transform.parent = transform;
+			}
+			go.name = "Wall";
 		}
-		go.name = "Wall";
+		go.transform.localPosition = worldPos;
+		go.transform.localScale = scale;
 	}
 
 	void HighlightPath()
