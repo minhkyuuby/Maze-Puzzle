@@ -5,7 +5,7 @@ using System;
 using UnityEngine.Events;
 using System.Collections;
 
-public partial class MazeGenerator : MonoBehaviour
+public class MazeGenerator : MonoBehaviour
 {
 	[Header("Maze Size")]
 	public int width = 10; // m
@@ -55,6 +55,7 @@ public partial class MazeGenerator : MonoBehaviour
 	public int gizmoMaxNodes = 500;
 	[Tooltip("Max edges to draw (deduped) before stopping (only applies if Gizmo Auto Cull on).")]
 	public int gizmoMaxEdges = 800;
+
 
 	// internal
 	class Cell { public bool[] wall = new bool[4]; /* 0=up,1=right,2=down,3=left */ }

@@ -14,9 +14,7 @@ public class MazePlayerController : MonoBehaviour
     public bool clickToMove = true;
     public LayerMask floorMask = ~0;
 
-    [Header("Goal")] 
-    public bool rightClickSetsGoal = true; 
-    public bool autoMoveToGoalOnSet = true; 
+    [Header("Goal Visual")] 
     public GameObject goalPrefab; 
     public Color goalGizmoColor = Color.green; 
 
@@ -38,13 +36,17 @@ public class MazePlayerController : MonoBehaviour
     public float minProgressPerCheck = 0.05f; 
     public bool snapSmallNudgeIfStillStuck = true; 
 
+    [Header("Effects")] 
+    public ParticleSystem attackParticle;
+
     [Header("Events")] 
     public UnityEvent onPathStarted; 
     public UnityEvent onPathCompleted; 
     public UnityEvent onGoalReached; 
 
     GameObject goalInstance;
-    MazeGenerator.MazeNode goalNode;
+    MazeGenerator.MazeNode goalNode;         // node used for path target (last graph node)
+    Vector3? goalWorldPos;                   // actual world position for final goal (node or corridor point)
 
     readonly Queue<Vector3> waypointQueue = new Queue<Vector3>();
     Vector3? activeWaypoint;
@@ -72,12 +74,23 @@ public class MazePlayerController : MonoBehaviour
             Debug.LogError("MazePlayerController: Maze reference missing.");
             enabled = false;
         }
+        else
+        {
+            // Place player at maze start once generated (in case generation happens later)
+            maze.onMazeGenerated.AddListener(OnMazeGeneratedPlacePlayer);
+            // If maze already generated (nodes exist), place immediately
+            if (maze.nodes != null && maze.nodes.Count > 0)
+            {
+                OnMazeGeneratedPlacePlayer();
+            }
+        }
     }
 
     void Update()
     {
         HandleClickInput();
         TickMovement();
+        HandleSpacebarEffect();
     }
 
     void HandleClickInput()
@@ -85,12 +98,7 @@ public class MazePlayerController : MonoBehaviour
         if (clickToMove && Input.GetMouseButtonDown(0))
         {
             if (TryRaycastFloor(out var hit))
-                SetDestination(hit.point);
-        }
-        if (rightClickSetsGoal && Input.GetMouseButtonDown(1))
-        {
-            if (TryRaycastFloor(out var hit))
-                SetGoal(hit.point);
+                SetDestination(hit.point); // unified: always sets goal + path
         }
     }
 
@@ -105,26 +113,22 @@ public class MazePlayerController : MonoBehaviour
     public void ClearGoal()
     {
         goalNode = null;
+        goalWorldPos = null;
         if (goalInstance) goalInstance.SetActive(false);
     }
 
-    public void SetGoal(Vector3 worldPoint)
-    {
-        if (!maze) return;
-        goalNode = FindClosestNode(worldPoint);
-        if (goalNode == null) return;
-        EnsureGoalInstance();
-        goalInstance.transform.position = goalNode.worldPos + Vector3.up * 0.2f;
-        goalInstance.SetActive(true);
-        if (autoMoveToGoalOnSet)
-            SetDestination(goalNode.worldPos);
-    }
-
+    // Unified method: sets path and visual goal
     public void SetDestination(Vector3 worldPoint)
     {
         if (!maze) return;
         var start = FindClosestNode(transform.position);
         if (start == null) return;
+
+        goalNode = null;
+        goalWorldPos = null;
+        waypointQueue.Clear();
+
+        Vector3 finalPoint = worldPoint;
 
         // Try mid-corridor capture first
         if (allowMidCorridorClick && TryFindCorridorPoint(worldPoint, out var corridorPoint, out var a, out var b))
@@ -134,6 +138,8 @@ public class MazePlayerController : MonoBehaviour
             var chosen = (PathCost(pathA) <= PathCost(pathB)) ? pathA : pathB;
             BuildWaypointsFromPath(chosen);
             waypointQueue.Enqueue(AdjustHeight(corridorPoint));
+            goalNode = (chosen != null && chosen.Count > 0) ? chosen[chosen.Count - 1] : null;
+            finalPoint = corridorPoint;
         }
         else
         {
@@ -141,7 +147,12 @@ public class MazePlayerController : MonoBehaviour
             if (dest == null) return;
             var path = AStar(start, dest);
             BuildWaypointsFromPath(path);
+            goalNode = dest;
+            finalPoint = dest.worldPos;
         }
+
+        goalWorldPos = finalPoint;
+        PlaceOrMoveGoal(finalPoint);
 
         if (waypointQueue.Count > 0)
         {
@@ -149,6 +160,14 @@ public class MazePlayerController : MonoBehaviour
             onPathStarted?.Invoke();
         }
         ResetStuck();
+    }
+
+    void PlaceOrMoveGoal(Vector3 worldPos)
+    {
+        EnsureGoalInstance();
+        var p = worldPos; p.y += 0.2f;
+        goalInstance.transform.position = p;
+        goalInstance.SetActive(true);
     }
 
     // Movement ---------------------------------------------------------
@@ -169,7 +188,7 @@ public class MazePlayerController : MonoBehaviour
             {
                 activeWaypoint = null;
                 onPathCompleted?.Invoke();
-                if (goalNode != null && Vector3.SqrMagnitude(transform.position - goalNode.worldPos) < 0.25f)
+                if (goalWorldPos.HasValue && (transform.position - goalWorldPos.Value).sqrMagnitude < 0.25f)
                 {
                     onGoalReached?.Invoke();
                     if (goalInstance) goalInstance.SetActive(false); // disable goal visual when reached
@@ -180,9 +199,8 @@ public class MazePlayerController : MonoBehaviour
         }
 
         Vector3 dir = delta / dist;
-        transform.position += dir * (moveSpeed * Time.deltaTime);
-        if (dir.sqrMagnitude > 0.01f)
-            transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(dir), Time.deltaTime * 10f);
+        transform.position = Vector3.MoveTowards(transform.position, target, moveSpeed * Time.deltaTime);
+        // Removed automatic rotation on move per user request
 
         HandleStuck(dist, dir);
     }
@@ -208,8 +226,8 @@ public class MazePlayerController : MonoBehaviour
             if (stuckTimer >= stuckGraceTime)
             {
                 // Repath to remaining target (goal preferred)
-                if (goalNode != null)
-                    SetDestination(goalNode.worldPos);
+                if (goalWorldPos.HasValue)
+                    SetDestination(goalWorldPos.Value);
                 else if (activeWaypoint.HasValue)
                     SetDestination(activeWaypoint.Value);
                 stuckTimer = 0f;
@@ -249,7 +267,6 @@ public class MazePlayerController : MonoBehaviour
             return bestSimple;
         }
 
-        // Build candidates sorted by distance
         var candidates = new List<(MazeGenerator.MazeNode node, float distSq)>();
         foreach (var n in maze.Nodes)
         {
@@ -273,31 +290,20 @@ public class MazePlayerController : MonoBehaviour
         Vector3 dir = (target - origin); float dist = dir.magnitude;
         if (dist < 0.001f) return true;
         dir /= dist;
-
-        // Multi-sample offsets orthogonal to direction (for corridor width)
         if (extraEdgeSamples < 0) extraEdgeSamples = 0;
-        Vector3 side = Vector3.Cross(Vector3.up, dir).normalized; // left/right
-        int samples = 1 + extraEdgeSamples * 2;
+        Vector3 side = Vector3.Cross(Vector3.up, dir).normalized;
         for (int s = -extraEdgeSamples; s <= extraEdgeSamples; s++)
         {
-            Vector3 o = origin + side * (s * 0.15f); // 0.15f offset step (adjust if corridor wider)
-            bool blocked;
-            if (losRadius > 0f)
-            {
-                blocked = Physics.SphereCast(o, losRadius, dir, out var hit, dist, wallMask, QueryTriggerInteraction.Ignore);
-            }
-            else
-            {
-                blocked = Physics.Raycast(o, dir, dist, wallMask, QueryTriggerInteraction.Ignore);
-            }
-            if (!blocked) return true; // at least one clear lane
+            Vector3 o = origin + side * (s * 0.15f);
+            bool blocked = (losRadius > 0f) ? Physics.SphereCast(o, losRadius, dir, out var _, dist, wallMask, QueryTriggerInteraction.Ignore)
+                                           : Physics.Raycast(o, dir, dist, wallMask, QueryTriggerInteraction.Ignore);
+            if (!blocked) return true;
         }
         return false;
     }
 
     void BuildWaypointsFromPath(List<MazeGenerator.MazeNode> path)
     {
-        waypointQueue.Clear();
         if (path == null) return;
         for (int i = 0; i < path.Count; i++)
             waypointQueue.Enqueue(path[i].worldPos + Vector3.up * 0.1f);
@@ -315,7 +321,6 @@ public class MazePlayerController : MonoBehaviour
     Vector3 AdjustHeight(Vector3 p)
     { p.y = transform.position.y + 0.1f; return p; }
 
-    // Mid-corridor detection: choose closest interior point on any edge within radius
     bool TryFindCorridorPoint(Vector3 worldPoint, out Vector3 corridorPoint, out MazeGenerator.MazeNode nodeA, out MazeGenerator.MazeNode nodeB)
     {
         corridorPoint = worldPoint; nodeA = null; nodeB = null;
@@ -345,7 +350,6 @@ public class MazePlayerController : MonoBehaviour
         return nodeA != null;
     }
 
-    // A* with binary min-heap priority queue --------------------------
     class NodeRecord : IComparable<NodeRecord>
     {
         public MazeGenerator.MazeNode node; public float f;
@@ -414,7 +418,6 @@ public class MazePlayerController : MonoBehaviour
         goalInstance.name = "MazeGoal";
     }
 
-    // Simple binary heap ------------------------------------------------
     class MinHeap<T> where T : IComparable<T>
     {
         readonly List<T> data = new List<T>();
@@ -448,10 +451,10 @@ public class MazePlayerController : MonoBehaviour
 #if UNITY_EDITOR
     void OnDrawGizmosSelected()
     {
-        if (goalNode != null)
+        if (goalWorldPos.HasValue)
         {
             Gizmos.color = goalGizmoColor;
-            Gizmos.DrawWireSphere(goalNode.worldPos + Vector3.up * 0.2f, 0.35f);
+            Gizmos.DrawWireSphere(goalWorldPos.Value + Vector3.up * 0.2f, 0.35f);
         }
         if (activeWaypoint != null)
         {
@@ -460,4 +463,36 @@ public class MazePlayerController : MonoBehaviour
         }
     }
 #endif
+
+    void HandleSpacebarEffect()
+    {
+        if (Input.GetKeyDown(KeyCode.Space))
+        {
+            if (attackParticle)
+            {
+                attackParticle.Play();
+            }
+        }
+    }
+
+    void OnDestroy()
+    {
+        if (maze) maze.onMazeGenerated.RemoveListener(OnMazeGeneratedPlacePlayer);
+    }
+
+    void OnMazeGeneratedPlacePlayer()
+    {
+        // Start cell is (0,0). Convert using same logic as node worldPos: x*cellSize + originOffset
+        if (!maze) return;
+        // Try to find node (0,0) if intersection-only it should exist; otherwise compute directly.
+        MazeGenerator.MazeNode startNode = null;
+        foreach (var n in maze.Nodes) { if (n.x == 0 && n.y == 0) { startNode = n; break; } }
+        Vector3 targetPos = startNode != null ? startNode.worldPos : (new Vector3(0,0,0));
+        // Maintain current Y (e.g., character controller height)
+        targetPos.y = transform.position.y;
+        transform.position = targetPos;
+        ClearGoal();
+        waypointQueue.Clear();
+        activeWaypoint = null;
+    }
 }

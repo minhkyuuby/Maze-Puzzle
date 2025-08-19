@@ -5,6 +5,7 @@ TagManager:
   serializedVersion: 3
   tags:
   - MazePoint
+  - Ghost
   layers:
   - Default
   - TransparentFX
@@ -12,8 +13,8 @@ TagManager:
   - Player
   - Water
   - UI
-  - 
-  - 
+  - Projectile
+  - Enemy
   - 
   - 
   - 
