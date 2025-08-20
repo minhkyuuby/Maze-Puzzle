@@ -5,7 +5,9 @@
 
 ## Table of contents
 * [General info](#general-info)
-* [Technologies](#technologies)
+* [Maze Generator](#maze-generator)
+* [Player Controller](#maze-player)
+* [Maze The Game](#maze-the-game)
 
 ## General info
 In this Project there are 2 scene.
@@ -17,7 +19,7 @@ In this Project there are 2 scene.
 Prefabs in projects:<br/>
 <img width="445" height="155" alt="image" src="https://github.com/user-attachments/assets/51d49abd-ab2a-4cc5-a663-f79fc82cd2fb" />
 
-## Maze Generator & Player Controller
+## Maze Generator
 A **customizable Maze Generator** for Unity with many adjustable properties.  
 Easily generate optimized mazes for your games or prototypes.
 
@@ -84,8 +86,14 @@ Easily generate optimized mazes for your games or prototypes.
 - Works best with pooled walls for performance.  
 - Seed values allow reproducible mazes for testing or level design.  
 
+## Maze Player
+<img width="120" height="100" alt="image" src="https://github.com/user-attachments/assets/9ab62c25-cf0c-46c7-99b1-5bba6f1d2bd1" />
 
-## Maze The Ganme
+Maze Player Script allow you to move and attack inside the maze
+
+<img width="622" height="852" alt="image" src="https://github.com/user-attachments/assets/4d5cad8a-9875-419f-8b9e-4d6c00ee42cb" />
+
+## Maze The Game
 Play the scene:
 * Spacebar: attack.
 * Mouse click: set destination point.
